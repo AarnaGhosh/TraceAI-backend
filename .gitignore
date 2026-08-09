@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Environment / secrets
+.env
+
+# Database
+*.db
+
+# Uploaded files
+uploads/persons/*
+uploads/sightings/*
+
+# Keep upload folders
+!uploads/persons/.gitkeep
+!uploads/sightings/.gitkeep
+
+# DeepFace cache/models
+.deepface/
+
+# OS
+.DS_Store
