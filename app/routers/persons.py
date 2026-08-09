@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import Optional, List
 
-from .. import models, schemas, auth, face_utils, utils
+from .. import models, schemas, auth, utils
 from ..database import get_db
 
 router = APIRouter(prefix="/api/persons", tags=["persons"])

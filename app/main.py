@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .database import Base, engine
-from .routers import persons, search, stats, auth_router
+from .routers import search, stats, auth_router
 
 # Create tables on startup (fine for SQLite / a PBL-scale project;
 # swap for Alembic migrations if this ever needs to survive schema changes in prod).
@@ -39,7 +39,6 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 app.include_router(auth_router.router)
 app.include_router(persons.router)
-app.include_router(search.router)
 app.include_router(stats.router)
 
 
