@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .database import Base, engine
-from .routers import search, stats, auth_router
+from .routers import search,persons,stats, auth_router
 
 # Create tables on startup (fine for SQLite / a PBL-scale project;
 # swap for Alembic migrations if this ever needs to survive schema changes in prod).
