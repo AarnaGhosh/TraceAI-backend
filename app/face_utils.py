@@ -12,10 +12,21 @@ separate vector DB for a project this size.
 """
 import json
 import numpy as np
-from deepface import DeepFace
 
-MODEL_NAME = "Facenet"          # 128-d embedding
-DETECTOR_BACKEND = "opencv"     # fast, no extra weight download
+MODEL_NAME = "Facenet"
+DETECTOR_BACKEND = "opencv"
+
+DeepFace = None
+
+
+def get_deepface():
+    global DeepFace
+
+    if DeepFace is None:
+        from deepface import DeepFace as DF
+        DeepFace = DF
+
+    return DeepFace
 # Empirically reasonable cosine-similarity cutoff for Facenet embeddings.
 # Similarity is 0..1 here (1 = identical). Tune this after testing with real photos.
 MATCH_THRESHOLD = 0.55
@@ -32,12 +43,13 @@ def get_embedding(image_path: str) -> list:
     Raises NoFaceDetectedError if no face is found.
     """
     try:
-        result = DeepFace.represent(
-            img_path=image_path,
-            model_name=MODEL_NAME,
-            detector_backend=DETECTOR_BACKEND,
-            enforce_detection=True,
-        )
+        deepface = get_deepface()
+        result = deepface.represent(
+        img_path=image_path,
+        model_name=MODEL_NAME,
+        detector_backend=DETECTOR_BACKEND,
+        enforce_detection=True,
+    )
     except ValueError as e:
         # DeepFace raises ValueError when face detection fails
         raise NoFaceDetectedError(str(e))

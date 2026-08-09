@@ -22,19 +22,11 @@ async def report_missing_person(
     db: Session = Depends(get_db),
 ):
     """
-    Report a new missing person. Saves the photo, extracts a face embedding,
-    and stores the case. This is the endpoint the "Report Missing Person" form
-    on the frontend should call.
+    Report a new missing person.
+    Saves the photo and stores the case.
     """
-    image_path = await utils.save_upload(image, "persons")
 
-    try:
-        embedding = face_utils.get_embedding(image_path)
-    except face_utils.NoFaceDetectedError:
-        raise HTTPException(
-            status_code=422,
-            detail="No face could be detected in the uploaded photo. Please upload a clear, front-facing photo.",
-        )
+    image_path = await utils.save_upload(image, "persons")
 
     person = models.Person(
         name=name,
@@ -46,13 +38,14 @@ async def report_missing_person(
         reporter_name=reporter_name,
         reporter_contact=reporter_contact,
         image_path=image_path,
-        face_embedding=face_utils.embedding_to_json(embedding),
+        face_embedding=None,
     )
+
     db.add(person)
     db.commit()
     db.refresh(person)
-    return person
 
+    return person
 
 @router.get("", response_model=List[schemas.PersonOut])
 def list_persons(status: Optional[str] = None, db: Session = Depends(get_db)):
