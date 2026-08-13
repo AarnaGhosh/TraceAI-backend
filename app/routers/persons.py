@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import Optional, List
 
-from .. import models, schemas, auth, utils
+from .. import models, schemas, auth, utils, face_utils
 from ..database import get_db
 
 
@@ -36,6 +36,18 @@ async def report_missing_person(
 
     image_path = await utils.save_upload(image, "persons")
 
+    try:
+        embedding = face_utils.get_embedding(image_path)
+        face_embedding = face_utils.embedding_to_json(embedding)
+    except face_utils.NoFaceDetectedError:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No face could be detected in the uploaded photo. "
+                "Please upload a clear, front-facing photo."
+            ),
+        )
+
     person = models.Person(
         name=name,
         age=age,
@@ -46,7 +58,7 @@ async def report_missing_person(
         reporter_name=reporter_name,
         reporter_contact=reporter_contact,
         image_path=image_path,
-        face_embedding=None,
+        face_embedding=face_embedding,
     )
 
     db.add(person)

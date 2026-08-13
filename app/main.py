@@ -40,6 +40,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.include_router(auth_router.router)
 app.include_router(persons.router)
 app.include_router(stats.router)
+app.include_router(search.router)
 
 
 @app.get("/")
