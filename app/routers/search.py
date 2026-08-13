@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import Optional
+from starlette.concurrency import run_in_threadpool
 
 from .. import models, schemas, utils
 from ..database import get_db
@@ -26,7 +27,10 @@ async def search_by_image(
     sighting_image_path = await utils.save_upload(image, "sightings")
 
     try:
-        query_embedding = face_utils.get_embedding(sighting_image_path)
+        query_embedding = await run_in_threadpool(
+            face_utils.get_embedding,
+            sighting_image_path
+        )
     except face_utils.NoFaceDetectedError:
         raise HTTPException(
             status_code=422,
