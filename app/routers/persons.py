@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import Optional, List
+from starlette.concurrency import run_in_threadpool
 
 from .. import models, schemas, auth, utils, face_utils
 from ..database import get_db
@@ -37,7 +38,10 @@ async def report_missing_person(
     image_path = await utils.save_upload(image, "persons")
 
     try:
-        embedding = face_utils.get_embedding(image_path)
+        embedding = await run_in_threadpool(
+            face_utils.get_embedding,
+            image_path
+        )
         face_embedding = face_utils.embedding_to_json(embedding)
     except face_utils.NoFaceDetectedError:
         raise HTTPException(

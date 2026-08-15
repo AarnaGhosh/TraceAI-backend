@@ -9,10 +9,15 @@ Images may be either:
 
 Embeddings are stored as JSON text in PostgreSQL.
 """
-
 import json
 import os
 from urllib.parse import urlparse
+
+# Limit TensorFlow/OpenMP resource usage on low-resource hosting
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["TF_NUM_INTRAOP_THREADS"] = "1"
+os.environ["TF_NUM_INTEROP_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
 
 import cv2
 import numpy as np
