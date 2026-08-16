@@ -1,38 +1,55 @@
 """
-Face detection, embedding and matching for TraceAI.
+Lightweight face detection + recognition for TraceAI.
 
-Uses DeepFace with the Facenet model and OpenCV face detector.
+Uses:
+- OpenCV YuNet for face detection
+- OpenCV SFace for face embeddings
 
-Images may be either:
-- local file paths
-- public Supabase Storage URLs
-
-Embeddings are stored as JSON text in PostgreSQL.
+No external deep-learning runtime required.
 """
+
 import json
 import os
 from urllib.parse import urlparse
-
-# Limit TensorFlow/OpenMP resource usage on low-resource hosting
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-os.environ["TF_NUM_INTRAOP_THREADS"] = "1"
-os.environ["TF_NUM_INTEROP_THREADS"] = "1"
-os.environ["OMP_NUM_THREADS"] = "1"
 
 import cv2
 import numpy as np
 import requests
 
 
-MODEL_NAME = "Facenet"
-DETECTOR_BACKEND = "opencv"
+# ---------------------------------------------------------
+# Model paths
+# ---------------------------------------------------------
 
-MATCH_THRESHOLD = float(
-    os.getenv("FACE_MATCH_THRESHOLD", "0.55")
+BASE_DIR = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
 )
 
-DeepFace = None
+YUNET_MODEL = os.path.join(
+    BASE_DIR,
+    "models",
+    "face_detection_yunet_2023mar.onnx",
+)
 
+SFACE_MODEL = os.path.join(
+    BASE_DIR,
+    "models",
+    "face_recognition_sface_2021dec.onnx",
+)
+
+
+# ---------------------------------------------------------
+# Matching threshold
+# ---------------------------------------------------------
+
+MATCH_THRESHOLD = float(
+    os.getenv("FACE_MATCH_THRESHOLD", "0.363")
+)
+
+
+# ---------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------
 
 class NoFaceDetectedError(Exception):
     """Raised when no face can be detected."""
@@ -44,48 +61,89 @@ class ImageLoadError(Exception):
     pass
 
 
-def get_deepface():
+# ---------------------------------------------------------
+# Lazy model loading
+# ---------------------------------------------------------
+
+_face_detector = None
+_face_recognizer = None
+
+
+def get_models():
     """
-    Lazily load DeepFace.
-
-    This prevents TensorFlow/DeepFace from being loaded when
-    the application starts unless face matching is actually used.
+    Load YuNet and SFace only when face processing is needed.
     """
-    global DeepFace
 
-    if DeepFace is None:
-        from deepface import DeepFace as DF
-        DeepFace = DF
+    global _face_detector
+    global _face_recognizer
 
-    return DeepFace
+    if _face_detector is None:
 
+        if not os.path.exists(YUNET_MODEL):
+            raise FileNotFoundError(
+                f"YuNet model not found: {YUNET_MODEL}"
+            )
+
+        _face_detector = cv2.FaceDetectorYN.create(
+            YUNET_MODEL,
+            "",
+            (320, 320),
+            0.6,
+            0.3,
+            5000,
+        )
+
+    if _face_recognizer is None:
+
+        if not os.path.exists(SFACE_MODEL):
+            raise FileNotFoundError(
+                f"SFace model not found: {SFACE_MODEL}"
+            )
+
+        _face_recognizer = cv2.FaceRecognizerSF.create(
+            SFACE_MODEL,
+            "",
+        )
+
+    return _face_detector, _face_recognizer
+
+
+# ---------------------------------------------------------
+# Image loading
+# ---------------------------------------------------------
 
 def load_image(image_source: str) -> np.ndarray:
     """
-    Load an image from either a local path or a public URL.
-
-    The image is kept in memory only for the duration of processing.
-    Nothing is permanently written to Render's disk.
+    Load an image from:
+    - local file path
+    - public HTTP/HTTPS URL
     """
 
     if not image_source:
-        raise ImageLoadError("No image path was provided.")
+        raise ImageLoadError(
+            "No image path was provided."
+        )
 
     parsed = urlparse(image_source)
 
-    # Supabase/public HTTP URL
+    # Public URL
     if parsed.scheme in ("http", "https"):
+
         try:
+
             response = requests.get(
                 image_source,
                 timeout=20,
             )
+
             response.raise_for_status()
 
             content = response.content
 
             if not content:
-                raise ImageLoadError("Downloaded image is empty.")
+                raise ImageLoadError(
+                    "Downloaded image is empty."
+                )
 
             image_array = np.frombuffer(
                 content,
@@ -99,18 +157,20 @@ def load_image(image_source: str) -> np.ndarray:
 
             if image is None:
                 raise ImageLoadError(
-                    "Downloaded file could not be decoded as an image."
+                    "Downloaded file could not be decoded."
                 )
 
             return image
 
         except requests.RequestException as exc:
+
             raise ImageLoadError(
                 f"Could not download image: {exc}"
             ) from exc
 
     # Local file
     if not os.path.exists(image_source):
+
         raise ImageLoadError(
             f"Image file not found: {image_source}"
         )
@@ -118,71 +178,137 @@ def load_image(image_source: str) -> np.ndarray:
     image = cv2.imread(image_source)
 
     if image is None:
+
         raise ImageLoadError(
-            "Local file could not be decoded as an image."
+            "Local file could not be decoded."
         )
 
     return image
 
 
+# ---------------------------------------------------------
+# Face detection
+# ---------------------------------------------------------
+
+def detect_face(image: np.ndarray):
+    """
+    Detect the largest face in an image.
+
+    Returns:
+        face box + landmarks
+
+    Raises:
+        NoFaceDetectedError
+    """
+
+    detector, _ = get_models()
+
+    height, width = image.shape[:2]
+
+    detector.setInputSize(
+        (width, height)
+    )
+
+    _, faces = detector.detect(image)
+
+    if faces is None or len(faces) == 0:
+
+        raise NoFaceDetectedError(
+            "No face could be detected."
+        )
+
+    # YuNet returns:
+    # x, y, w, h, right_eye_x, right_eye_y,
+    # left_eye_x, left_eye_y,
+    # nose_x, nose_y,
+    # mouth_right_x, mouth_right_y,
+    # mouth_left_x, mouth_left_y,
+    # confidence
+
+    # Select largest detected face
+    face = max(
+        faces,
+        key=lambda f: f[2] * f[3]
+    )
+
+    return face
+
+
+# ---------------------------------------------------------
+# Face embedding
+# ---------------------------------------------------------
+
 def get_embedding(image_source: str) -> list:
     """
-    Generate a 128-dimensional Facenet embedding.
-
-    Accepts either a local image path or a public image URL.
+    Detect the largest face and generate
+    an SFace embedding.
     """
 
     image = load_image(image_source)
 
-    try:
-        deepface = get_deepface()
+    _, recognizer = get_models()
 
-        result = deepface.represent(
-            img_path=image,
-            model_name=MODEL_NAME,
-            detector_backend=DETECTOR_BACKEND,
-            enforce_detection=True,
-        )
+    face = detect_face(image)
 
-    except ValueError as exc:
-        raise NoFaceDetectedError(str(exc)) from exc
+    aligned_face = recognizer.alignCrop(
+        image,
+        face,
+    )
 
-    except Exception:
-        raise
+    embedding = recognizer.feature(
+        aligned_face
+    )
 
-    if not result:
+    if embedding is None:
+
         raise NoFaceDetectedError(
-            "No face embedding was generated."
+            "Could not generate face embedding."
         )
 
-    embedding = result[0].get("embedding")
-
-    if not embedding:
-        raise NoFaceDetectedError(
-            "No face embedding was generated."
-        )
-
-    return embedding
+    return embedding.flatten().astype(
+        np.float32
+    ).tolist()
 
 
-def embedding_to_json(embedding: list) -> str:
-    """Convert embedding to JSON for database storage."""
+# ---------------------------------------------------------
+# JSON conversion
+# ---------------------------------------------------------
+
+def embedding_to_json(
+    embedding: list
+) -> str:
+
     return json.dumps(embedding)
 
 
-def embedding_from_json(embedding_json: str) -> np.ndarray:
-    """Convert JSON embedding back into a NumPy array."""
+def embedding_from_json(
+    embedding_json: str
+) -> np.ndarray:
+
     return np.array(
         json.loads(embedding_json),
         dtype=np.float32,
     )
 
 
-def cosine_similarity(vec_a, vec_b) -> float:
-    """Calculate cosine similarity between two embeddings."""
+# ---------------------------------------------------------
+# Similarity
+# ---------------------------------------------------------
 
-    a = np.asarray(vec_a, dtype=np.float32)
-    b = np.asarray(vec_b, dtype=np.float32)
+def cosine_similarity(
+    vec_a,
+    vec_b,
+) -> float:
+
+    a = np.asarray(
+        vec_a,
+        dtype=np.float32,
+    )
+
+    b = np.asarray(
+        vec_b,
+        dtype=np.float32,
+    )
 
     denom = (
         np.linalg.norm(a)
@@ -197,11 +323,10 @@ def cosine_similarity(vec_a, vec_b) -> float:
     )
 
 
-def similarity_score_percent(vec_a, vec_b) -> float:
-    """
-    Convert cosine similarity into a 0-100 score
-    for displaying in the dashboard.
-    """
+def similarity_score_percent(
+    vec_a,
+    vec_b,
+) -> float:
 
     similarity = cosine_similarity(
         vec_a,
@@ -224,9 +349,11 @@ def is_match(
     vec_b,
     threshold: float = MATCH_THRESHOLD,
 ) -> bool:
-    """Return True when similarity reaches the configured threshold."""
 
     return (
-        cosine_similarity(vec_a, vec_b)
+        cosine_similarity(
+            vec_a,
+            vec_b,
+        )
         >= threshold
     )

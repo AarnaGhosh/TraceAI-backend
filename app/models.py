@@ -32,8 +32,7 @@ class Person(Base):
     status = Column(String, default="missing")  # missing | found
 
     image_path = Column(String, nullable=False)       # stored photo, relative path
-    face_embedding = Column(Text, nullable=True)       # JSON-encoded vector (Facenet, 128-d)
-
+    face_embedding = Column(Text, nullable=True)       # JSON-encoded 128-d SFace vector    
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                          onupdate=lambda: datetime.now(timezone.utc))
