@@ -17,8 +17,5 @@ uploads/sightings/*
 !uploads/persons/.gitkeep
 !uploads/sightings/.gitkeep
 
-# DeepFace cache/models
-.deepface/
-
 # OS
 .DS_Store

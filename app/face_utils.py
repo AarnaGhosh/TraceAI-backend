@@ -4,12 +4,14 @@ Lightweight face detection + recognition for TraceAI.
 Uses:
 - OpenCV YuNet for face detection
 - OpenCV SFace for face embeddings
+- Trained 500-person face database for recognition
 
-No external deep-learning runtime required.
+No TensorFlow or DeepFace required.
 """
 
 import json
 import os
+import pickle
 from urllib.parse import urlparse
 
 import cv2
@@ -37,6 +39,11 @@ SFACE_MODEL = os.path.join(
     "face_recognition_sface_2021dec.onnx",
 )
 
+FACE_DATABASE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "face_database.pkl",
+)
+
 
 # ---------------------------------------------------------
 # Matching threshold
@@ -62,12 +69,46 @@ class ImageLoadError(Exception):
 
 
 # ---------------------------------------------------------
-# Lazy model loading
+# Lazy loading
 # ---------------------------------------------------------
 
 _face_detector = None
 _face_recognizer = None
+_face_database = None
 
+
+# ---------------------------------------------------------
+# Load face database
+# ---------------------------------------------------------
+
+def get_face_database():
+    """
+    Load the trained 500-person face embedding database.
+    """
+
+    global _face_database
+
+    if _face_database is None:
+
+        if not os.path.exists(FACE_DATABASE_PATH):
+            raise FileNotFoundError(
+                f"Face database not found: {FACE_DATABASE_PATH}"
+            )
+
+        with open(FACE_DATABASE_PATH, "rb") as file:
+            _face_database = pickle.load(file)
+
+        print(
+            f"Loaded face database with "
+            f"{len(_face_database)} persons."
+        )
+
+    return _face_database
+
+
+# ---------------------------------------------------------
+# Lazy model loading
+# ---------------------------------------------------------
 
 def get_models():
     """
@@ -217,15 +258,7 @@ def detect_face(image: np.ndarray):
             "No face could be detected."
         )
 
-    # YuNet returns:
-    # x, y, w, h, right_eye_x, right_eye_y,
-    # left_eye_x, left_eye_y,
-    # nose_x, nose_y,
-    # mouth_right_x, mouth_right_y,
-    # mouth_left_x, mouth_left_y,
-    # confidence
-
-    # Select largest detected face
+    # Select the largest detected face
     face = max(
         faces,
         key=lambda f: f[2] * f[3]
@@ -292,7 +325,7 @@ def embedding_from_json(
 
 
 # ---------------------------------------------------------
-# Similarity
+# Cosine similarity
 # ---------------------------------------------------------
 
 def cosine_similarity(
@@ -344,6 +377,10 @@ def similarity_score_percent(
     )
 
 
+# ---------------------------------------------------------
+# Check if two embeddings match
+# ---------------------------------------------------------
+
 def is_match(
     vec_a,
     vec_b,
@@ -357,3 +394,101 @@ def is_match(
         )
         >= threshold
     )
+
+
+# ---------------------------------------------------------
+# Find best person match from 500-person database
+# ---------------------------------------------------------
+
+def find_best_match(
+    embedding: list,
+):
+    """
+    Compare a face embedding against all persons
+    in the trained face database.
+
+    Returns:
+        person_id
+        similarity
+        confidence
+        matched
+    """
+
+    database = get_face_database()
+
+    best_person_id = None
+    best_similarity = -1.0
+
+    query_embedding = np.asarray(
+        embedding,
+        dtype=np.float32,
+    )
+
+    # Compare against every stored embedding
+    for person_id, embeddings in database.items():
+
+        for stored_embedding in embeddings:
+
+            similarity = cosine_similarity(
+                query_embedding,
+                stored_embedding,
+            )
+
+            if similarity > best_similarity:
+
+                best_similarity = similarity
+                best_person_id = str(person_id)
+
+    # Convert similarity to percentage
+    confidence_percent = round(
+        max(
+            0.0,
+            min(1.0, best_similarity)
+        ) * 100,
+        2,
+    )
+
+    # Check threshold
+    matched = best_similarity >= MATCH_THRESHOLD
+
+    return {
+        "person_id": best_person_id,
+        "similarity": round(
+            float(best_similarity),
+            4,
+        ),
+        "confidence": confidence_percent,
+        "matched": matched,
+    }
+
+
+# ---------------------------------------------------------
+# Recognize person directly from image
+# ---------------------------------------------------------
+
+def recognize_person(
+    image_source: str,
+):
+    """
+    Complete recognition pipeline:
+
+    Image
+        ↓
+    YuNet face detection
+        ↓
+    SFace embedding
+        ↓
+    Compare with 500-person database
+        ↓
+    Return best match
+    """
+
+    embedding = get_embedding(
+        image_source
+    )
+
+    result = find_best_match(
+        embedding
+    )
+
+    return result
