@@ -621,7 +621,41 @@ async def search_video(
         )
 
     # -----------------------------------------------------
-    # 11. Commit sightings
+    # 11. Mark the case as FOUND and store the surveillance
+    #     location so the dashboard can update from the
+    #     backend without relying on a second frontend PATCH.
+    # -----------------------------------------------------
+
+    person.status = "found"
+
+    location_note = (
+        "Surveillance potential sighting detected."
+        f"\nLocation: {location or 'Not provided'}"
+        f"\nCamera: {camera_id or 'Not specified'}"
+        f"\nTimestamp: {result['best_match_timestamp']:.2f} seconds"
+        f"\nSimilarity: {result['best_match_score']:.2f}%"
+    )
+
+    if (
+        latitude is not None
+        and longitude is not None
+        and not (latitude == 0 and longitude == 0)
+    ):
+        location_note += (
+            f"\nGPS Coordinates: {latitude}, {longitude}"
+        )
+
+    existing_description = person.description or ""
+
+    if "Surveillance potential sighting detected." not in existing_description:
+        person.description = (
+            f"{existing_description}\n\n{location_note}"
+            if existing_description
+            else location_note
+        )
+
+    # -----------------------------------------------------
+    # 12. Commit sightings + updated person status together
     # -----------------------------------------------------
 
     db.commit()
@@ -631,7 +665,7 @@ async def search_video(
         db.refresh(sighting)
 
     # -----------------------------------------------------
-    # 12. Return response
+    # 13. Return response
     # -----------------------------------------------------
 
     return schemas.VideoSearchResponse(
