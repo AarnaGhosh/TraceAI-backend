@@ -266,6 +266,31 @@ def detect_face(image: np.ndarray):
 
     return face
 
+def detect_all_faces(image: np.ndarray):
+    """
+    Detect all faces in an image/frame.
+
+    Unlike detect_face(), this function does not select
+    only the largest face.
+
+    Returns:
+        List of detected YuNet face boxes + landmarks.
+    """
+
+    detector, _ = get_models()
+
+    height, width = image.shape[:2]
+
+    detector.setInputSize(
+        (width, height)
+    )
+
+    _, faces = detector.detect(image)
+
+    if faces is None or len(faces) == 0:
+        return []
+
+    return list(faces)
 
 # ---------------------------------------------------------
 # Face embedding
@@ -302,6 +327,54 @@ def get_embedding(image_source: str) -> list:
         np.float32
     ).tolist()
 
+def get_frame_embeddings(image: np.ndarray) -> list:
+    """
+    Detect all faces in a video frame and generate
+    one SFace embedding for each detected face.
+
+    Returns:
+        List of dictionaries containing:
+        - face: YuNet face data
+        - embedding: 128-D SFace embedding
+    """
+
+    _, recognizer = get_models()
+
+    faces = detect_all_faces(image)
+
+    results = []
+
+    for face in faces:
+        try:
+            aligned_face = recognizer.alignCrop(
+                image,
+                face
+            )
+
+            embedding = recognizer.feature(
+                aligned_face
+            )
+
+            if embedding is None:
+                continue
+
+            embedding = (
+                embedding
+                .flatten()
+                .astype(np.float32)
+                .tolist()
+            )
+
+            results.append({
+                "face": face.tolist(),
+                "embedding": embedding
+            })
+
+        except Exception:
+            # Skip a face if SFace cannot process it
+            continue
+
+    return results
 
 # ---------------------------------------------------------
 # JSON conversion
