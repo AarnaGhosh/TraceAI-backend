@@ -12,7 +12,6 @@ from fastapi import (
     File,
     Form,
 )
-
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
@@ -27,34 +26,32 @@ router = APIRouter(
 )
 
 
-# =========================================================
-# VIDEO PROCESSING
-# =========================================================
+# ---------------------------------------------------------
+# Video processing
+# ---------------------------------------------------------
 
 def process_video(
     video_path: str,
     reference_embedding: list,
 ):
     """
-    Search a surveillance video for the selected person.
+    Process a surveillance video.
 
     Pipeline:
 
-        Surveillance Video
-                ↓
-        Sample video frames
-                ↓
+        Video
+          ↓
+        Sample frames
+          ↓
         YuNet detects ALL faces
-                ↓
-        SFace creates embedding for each face
-                ↓
-        Compare with selected person's SFace embedding
-                ↓
+          ↓
+        SFace generates embedding for each face
+          ↓
+        Compare with reference embedding
+          ↓
         Record confident matches
-                ↓
-        Group continuous sightings
-                ↓
-        Save strongest evidence frame
+          ↓
+        Find strongest evidence frame
     """
 
     from .. import face_utils
@@ -88,16 +85,11 @@ def process_video(
 
     frames_processed = 0
     faces_detected = 0
-
     matches = []
 
-    # Keep best similarity even if it does not cross
-    # the threshold. This is useful for debugging.
-    best_similarity_value = -1.0
-
-    best_similarity_percent = None
-
+    best_match_score = 0.0
     best_match_frame = None
+    best_match_face = None
     best_match_timestamp = None
 
     # -----------------------------------------------------
@@ -120,7 +112,7 @@ def process_video(
             )
 
             # ---------------------------------------------
-            # Detect ALL faces
+            # Detect ALL faces + generate embeddings
             # ---------------------------------------------
 
             results = (
@@ -143,10 +135,6 @@ def process_video(
                     result["embedding"]
                 )
 
-                # -----------------------------------------
-                # Cosine similarity
-                # -----------------------------------------
-
                 similarity = (
                     face_utils.cosine_similarity(
                         reference_embedding,
@@ -160,30 +148,6 @@ def process_video(
                         video_embedding,
                     )
                 )
-
-                # -----------------------------------------
-                # ALWAYS keep strongest similarity
-                # -----------------------------------------
-
-                if similarity > best_similarity_value:
-
-                    best_similarity_value = similarity
-
-                    best_similarity_percent = (
-                        similarity_percent
-                    )
-
-                    best_match_frame = (
-                        frame.copy()
-                    )
-
-                    best_match_timestamp = (
-                        timestamp
-                    )
-
-                # -----------------------------------------
-                # Threshold decision
-                # -----------------------------------------
 
                 matched = (
                     face_utils.is_match(
@@ -202,23 +166,42 @@ def process_video(
                         }
                     )
 
+                    # -------------------------------------
+                    # Keep strongest evidence frame
+                    # -------------------------------------
+
+                    if (
+                        similarity
+                        > best_match_score
+                    ):
+
+                        best_match_score = similarity
+
+                        best_match_frame = (
+                            frame.copy()
+                        )
+
+                        best_match_face = result["face"]
+
+                        best_match_timestamp = (
+                            timestamp
+                        )
+
         frame_number += 1
 
     cap.release()
 
-    # =====================================================
-    # GROUP CONTINUOUS MATCHES
-    # =====================================================
+    # -----------------------------------------------------
+    # Group continuous matches into sightings
+    # -----------------------------------------------------
 
     groups = []
 
     for match in matches:
 
         timestamp = match["timestamp"]
-
         similarity = match["similarity"]
 
-        # First match
         if not groups:
 
             groups.append(
@@ -234,9 +217,8 @@ def process_video(
 
         last_group = groups[-1]
 
-        # Matches within one second are considered
-        # part of the same continuous sighting.
-
+        # A gap of <= 1 second means
+        # this is probably the same sighting.
         if (
             timestamp
             - last_group["end"]
@@ -269,48 +251,41 @@ def process_video(
                 }
             )
 
-    # =====================================================
-    # RETURN RESULTS
-    # =====================================================
-
     return {
-
-        "total_frames":
-            total_frames,
-
-        "frames_processed":
-            frames_processed,
-
-        "faces_detected":
-            faces_detected,
-
-        "matches":
-            matches,
-
-        "groups":
-            groups,
-
-        "best_match_score":
-            best_similarity_percent,
-
-        "best_match_timestamp":
-            best_match_timestamp,
-
-        "best_match_frame":
-            best_match_frame,
+        "total_frames": total_frames,
+        "frames_processed": frames_processed,
+        "faces_detected": faces_detected,
+        "matches": matches,
+        "groups": groups,
+        "best_match_score": (
+            round(
+                best_match_score * 100,
+                2,
+            )
+            if best_match_frame is not None
+            else None
+        ),
+        "best_match_timestamp": (
+            best_match_timestamp
+        ),
+        "best_match_frame": (
+            best_match_frame
+        ),
+        "best_match_face": (
+            best_match_face
+        ),
     }
 
 
-# =========================================================
-# VIDEO SEARCH ENDPOINT
-# =========================================================
+# ---------------------------------------------------------
+# Video search endpoint
+# ---------------------------------------------------------
 
 @router.post(
     "/search",
     response_model=schemas.VideoSearchResponse,
 )
 async def search_video(
-
     person_id: int = Form(...),
 
     video: UploadFile = File(...),
@@ -328,22 +303,17 @@ async def search_video(
     notes: Optional[str] = Form(None),
 
     db: Session = Depends(get_db),
-
 ):
-
     """
     Search a surveillance video for a selected
     missing person.
     """
 
-    from .. import face_utils
-
-    # =====================================================
-    # 1. VALIDATE VIDEO
-    # =====================================================
+    # -----------------------------------------------------
+    # 1. Validate video
+    # -----------------------------------------------------
 
     if not video.filename:
-
         raise HTTPException(
             status_code=400,
             detail="No video file was provided.",
@@ -371,9 +341,9 @@ async def search_video(
             ),
         )
 
-    # =====================================================
-    # 2. FIND SELECTED PERSON
-    # =====================================================
+    # -----------------------------------------------------
+    # 2. Find missing person
+    # -----------------------------------------------------
 
     person = (
         db.query(models.Person)
@@ -390,112 +360,48 @@ async def search_video(
             detail="Person not found.",
         )
 
-    # =====================================================
-    # 3. MAKE SURE REFERENCE IMAGE EXISTS
-    # =====================================================
+    # -----------------------------------------------------
+    # 3. Check reference embedding
+    # -----------------------------------------------------
 
-    if not person.image_path:
+    if not person.face_embedding:
 
         raise HTTPException(
             status_code=400,
             detail=(
-                "This missing-person case does not "
-                "have a reference image."
+                "This person does not have a stored "
+                "face embedding. Please report the "
+                "person again with a valid reference image."
             ),
         )
 
-    # =====================================================
-    # 4. REGENERATE SFACE EMBEDDING
-    #
-    # IMPORTANT:
-    #
-    # Do NOT blindly trust the old database embedding.
-    #
-    # The current TraceAI system uses:
-    #
-    # YuNet → SFace → 128-D embedding
-    #
-    # We regenerate it from the person's actual
-    # reference photograph so that it is guaranteed
-    # to use the same SFace model as the surveillance
-    # video.
-    # =====================================================
+    # -----------------------------------------------------
+    # 4. Convert stored JSON embedding
+    # -----------------------------------------------------
+
+    from .. import face_utils
 
     try:
 
         reference_embedding = (
-            face_utils.get_embedding(
-                person.image_path
+            face_utils.embedding_from_json(
+                person.face_embedding
             )
         )
 
     except Exception as exc:
 
         raise HTTPException(
-            status_code=400,
-            detail=(
-                "Could not generate a fresh face "
-                "embedding from the person's reference "
-                f"image: {str(exc)}"
-            ),
-        )
-
-    # =====================================================
-    # 5. VALIDATE EMBEDDING
-    # =====================================================
-
-    if not reference_embedding:
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "The person's reference image did not "
-                "produce a valid face embedding."
-            ),
-        )
-
-    if len(reference_embedding) != 128:
-
-        raise HTTPException(
             status_code=500,
             detail=(
-                "Invalid SFace embedding size. "
-                f"Expected 128 values but got "
-                f"{len(reference_embedding)}."
+                "Stored face embedding could not "
+                f"be loaded: {str(exc)}"
             ),
         )
 
-    # =====================================================
-    # 6. SAVE FRESH EMBEDDING TO DATABASE
-    # =====================================================
-
-    try:
-
-        person.face_embedding = (
-            face_utils.embedding_to_json(
-                reference_embedding
-            )
-        )
-
-        db.commit()
-
-        db.refresh(person)
-
-    except Exception as exc:
-
-        db.rollback()
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Could not update the person's "
-                f"face embedding: {str(exc)}"
-            ),
-        )
-
-    # =====================================================
-    # 7. SAVE VIDEO TEMPORARILY
-    # =====================================================
+    # -----------------------------------------------------
+    # 5. Save uploaded video temporarily
+    # -----------------------------------------------------
 
     temp_video_path = None
 
@@ -519,7 +425,7 @@ async def search_video(
                     detail="Uploaded video is empty.",
                 )
 
-            # 200 MB maximum
+            # 200 MB limit
             max_video_size = (
                 200 * 1024 * 1024
             )
@@ -536,9 +442,9 @@ async def search_video(
 
             temp_video.write(contents)
 
-        # =================================================
-        # 8. RUN VIDEO PROCESSING
-        # =================================================
+        # -------------------------------------------------
+        # 6. Run CPU-heavy face processing
+        # -------------------------------------------------
 
         result = await run_in_threadpool(
             process_video,
@@ -548,94 +454,83 @@ async def search_video(
 
     finally:
 
-        # =================================================
-        # 9. DELETE TEMP VIDEO
-        # =================================================
+        # -------------------------------------------------
+        # 7. Remove temporary video
+        # -------------------------------------------------
 
         if (
             temp_video_path
-            and os.path.exists(
-                temp_video_path
-            )
+            and os.path.exists(temp_video_path)
         ):
 
             try:
-
                 os.remove(
                     temp_video_path
                 )
-
             except OSError:
-
                 pass
 
-    # =====================================================
-    # 10. NO CONFIDENT MATCH
-    # =====================================================
+    # -----------------------------------------------------
+    # 8. No confident matches
+    # -----------------------------------------------------
 
     if not result["groups"]:
 
-        best_similarity = (
-            result["best_match_score"]
-        )
-
-        best_timestamp = (
-            result["best_match_timestamp"]
-        )
-
         return schemas.VideoSearchResponse(
-
             person_id=person.id,
-
             video_name=video.filename,
-
             camera_id=camera_id,
-
             location=location,
-
             latitude=latitude,
-
             longitude=longitude,
-
-            frames_processed=(
-                result["frames_processed"]
-            ),
-
-            faces_detected=(
-                result["faces_detected"]
-            ),
-
+            frames_processed=result[
+                "frames_processed"
+            ],
+            faces_detected=result[
+                "faces_detected"
+            ],
             matches_found=0,
-
-            best_similarity=best_similarity,
-
-            best_timestamp_seconds=(
-                best_timestamp
-            ),
-
+            best_similarity=None,
+            best_timestamp_seconds=None,
             evidence_image_path=None,
-
             sightings=[],
-
             message=(
-                "Video processed successfully. "
-                "No confident match was found. "
-                f"Best similarity was "
-                f"{best_similarity if best_similarity is not None else 'N/A'}%."
+                "Video processed successfully, "
+                "but no confident match was found."
             ),
         )
 
-    # =====================================================
-    # 11. UPLOAD BEST EVIDENCE FRAME
-    # =====================================================
+    # -----------------------------------------------------
+    # 9. Upload strongest evidence frame
+    # -----------------------------------------------------
 
     evidence_image_path = None
 
-    best_frame = (
-        result["best_match_frame"]
-    )
+    best_frame = result[
+        "best_match_frame"
+    ]
 
     if best_frame is not None:
+
+        # Annotate the exact face that produced the strongest match.
+        best_face = result.get("best_match_face")
+        if best_face is not None and len(best_face) >= 4:
+            try:
+                x, y, w, h = [int(round(float(v))) for v in best_face[:4]]
+                x = max(0, x); y = max(0, y); w = max(1, w); h = max(1, h)
+                x2 = min(best_frame.shape[1] - 1, x + w)
+                y2 = min(best_frame.shape[0] - 1, y + h)
+                cv2.rectangle(best_frame, (x, y), (x2, y2), (39, 174, 96), 3)
+                label = f"MATCH {result['best_match_score']:.2f}%"
+                font = cv2.FONT_HERSHEY_SIMPLEX; font_scale = 0.65; thickness = 2
+                (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+                label_top = max(0, y - text_h - baseline - 10)
+                label_bottom = label_top + text_h + baseline + 8
+                label_right = min(best_frame.shape[1] - 1, x + text_w + 10)
+                cv2.rectangle(best_frame, (x, label_top), (label_right, label_bottom), (39, 174, 96), -1)
+                cv2.putText(best_frame, label, (x + 5, label_bottom - baseline - 4), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            except Exception:
+                pass
 
         success, encoded = cv2.imencode(
             ".jpg",
@@ -652,21 +547,18 @@ async def search_video(
                 ),
             )
 
+        # Create an UploadFile-like object
+        # for the existing Supabase utility.
         evidence_file = UploadFile(
-
             filename="video_evidence.jpg",
-
             file=io.BytesIO(
                 encoded.tobytes()
             ),
-
-            headers=Headers(
-                {
-                    "content-type":
-                    "image/jpeg"
-                }
-            ),
+            headers=Headers({
+                "content-type": "image/jpeg"
+            }),
         )
+
 
         evidence_image_path = (
             await utils.save_upload(
@@ -675,9 +567,9 @@ async def search_video(
             )
         )
 
-    # =====================================================
-    # 12. CREATE SIGHTING RECORDS
-    # =====================================================
+    # -----------------------------------------------------
+    # 10. Create Sighting records
+    # -----------------------------------------------------
 
     sighting_objects = []
 
@@ -687,9 +579,7 @@ async def search_video(
 
             person_id=person.id,
 
-            image_path=(
-                evidence_image_path
-            ),
+            image_path=evidence_image_path,
 
             similarity_score=(
                 group["best_similarity"]
@@ -730,21 +620,19 @@ async def search_video(
             sighting
         )
 
-    # =====================================================
-    # 13. COMMIT
-    # =====================================================
+    # -----------------------------------------------------
+    # 11. Commit sightings
+    # -----------------------------------------------------
 
     db.commit()
 
+    # Refresh database objects
     for sighting in sighting_objects:
+        db.refresh(sighting)
 
-        db.refresh(
-            sighting
-        )
-
-    # =====================================================
-    # 14. RETURN SUCCESS
-    # =====================================================
+    # -----------------------------------------------------
+    # 12. Return response
+    # -----------------------------------------------------
 
     return schemas.VideoSearchResponse(
 
@@ -760,25 +648,25 @@ async def search_video(
 
         longitude=longitude,
 
-        frames_processed=(
-            result["frames_processed"]
-        ),
+        frames_processed=result[
+            "frames_processed"
+        ],
 
-        faces_detected=(
-            result["faces_detected"]
-        ),
+        faces_detected=result[
+            "faces_detected"
+        ],
 
         matches_found=len(
             result["groups"]
         ),
 
-        best_similarity=(
-            result["best_match_score"]
-        ),
+        best_similarity=result[
+            "best_match_score"
+        ],
 
-        best_timestamp_seconds=(
-            result["best_match_timestamp"]
-        ),
+        best_timestamp_seconds=result[
+            "best_match_timestamp"
+        ],
 
         evidence_image_path=(
             evidence_image_path
