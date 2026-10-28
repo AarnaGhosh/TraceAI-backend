@@ -634,6 +634,7 @@ async def search_video(
         f"\nCamera: {camera_id or 'Not specified'}"
         f"\nTimestamp: {result['best_match_timestamp']:.2f} seconds"
         f"\nSimilarity: {result['best_match_score']:.2f}%"
+        f"\nMatches: {len(result['groups'])}"
     )
 
     if (
